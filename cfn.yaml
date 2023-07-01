@@ -1,0 +1,486 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "WS Chat Backend"
+Parameters:
+  Route53HostedZoneId:
+    Type: "String"
+    Description: "Route53 Hosted Zone Id"
+    Default: "Z0206027EF0OUUK7GFJ2"
+  CodeStarConnectionArn:
+    Type: "String"
+    Description: "Code Star Connection Arn"
+    Default: "arn:aws:codestar-connections:us-east-1:041725435582:connection/14ebd377-bd83-470b-a77b-af1951925872"
+  BucketBaseName:
+    Type: "String"
+    Description: "Base name for s3 bucket"
+    Default: "ws-chat"
+  Env:
+    Type: "String"
+    Description: "Environment"
+    Default: "prd"
+    AllowedValues:
+      - "prd"
+      - "hom"
+      - "dev"
+  RepoName:
+    Type: "String"
+    Description: "The repository name"
+    Default: "ws_case_study"
+  GitUser:
+    Type: "String"
+    Description: "Git User"
+    Default: "maiconpavi"
+  Domain:
+    Type: "String"
+    Description: "Domain"
+    Default: "moredeve.com"
+  CertificateArn:
+    Type: "String"
+    Description: "Certificate Arn"
+    Default: "arn:aws:acm:us-east-1:041725435582:certificate/343b9d9e-4200-40c6-aae4-0f690c696326"
+  GitBranch:
+    Type: "String"
+    Description: "Git Branch"
+    Default: "main"
+  BinaryName:
+    Type: "String"
+    Description: "Binary Name"
+    Default: "ws_case_study"
+
+Resources:
+  ArtifactBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub "${AWS::AccountId}-${Env}-${BucketBaseName}-artifact"
+      AccessControl: "Private"
+      VersioningConfiguration:
+        Status: "Enabled"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  LambdaDeploymentBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub "${AWS::AccountId}-${Env}-${BucketBaseName}-lambda"
+      AccessControl: "Private"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  DynamoDBTable:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "connection_id"
+          AttributeType: "S"
+      BillingMode: "PAY_PER_REQUEST"
+      TableName: "chat-connections"
+      KeySchema:
+        - AttributeName: "connection_id"
+          KeyType: "HASH"
+
+  IAMRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/service-role/"
+      RoleName: "test-ws-rust"
+      AssumeRolePolicyDocument: |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com",
+                  "apigateway.amazonaws.com",
+                  "codebuild.amazonaws.com",
+                  "codepipeline.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: dynamodb
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "dynamodb:DeleteItem",
+                            "dynamodb:GetItem",
+                            "dynamodb:PutItem",
+                            "dynamodb:Scan",
+                            "dynamodb:UpdateItem"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+        - PolicyName: logs
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "logs:CreateLogStream",
+                            "logs:PutLogEvents",
+                            "logs:CreateLogGroup"
+                        ],
+                        "Resource": [
+                            "*"
+                        ]
+                    }
+                ]
+            }
+        - PolicyName: s3
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "s3:PutObject",
+                            "s3:GetObject",
+                            "s3:DeleteObject",
+                            "s3:ListBucket"
+                        ],
+                        "Resource": [
+                            "*"
+                        ]
+                    }
+                ]
+            }
+        - PolicyName: lambda
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "lambda:*"
+                        ],
+                        "Resource": [
+                            "*"
+                        ]
+                    }
+                ]
+            }
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator"
+        - "arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "lambda-${Env}-${BucketBaseName}"
+      Source:
+        BuildSpec: |
+          version: 0.2
+
+          env:
+            variables:
+              "RUSTFLAGS": "-C target-cpu=neoverse-n1 -C strip=symbols"
+
+          cache:
+            paths:
+              - '/root/.cargo/**/*'
+              - './target/**/*'
+              - '/root/.cache/pip/**/*'
+
+          phases:
+            pre_build:
+              commands:
+                - source "$HOME/.cargo/env" || true
+                - |
+                  (command -v cargo >/dev/null && rustup update stable) || {
+                    curl https://sh.rustup.rs -sSf | bash -s -- -y;
+                    source "$HOME/.cargo/env";
+                    cargo search --limit 0;
+                    rustup target add aarch64-unknown-linux-gnu;
+                  }
+                - rustup target add aarch64-unknown-linux-gnu
+                - pip install cargo-zigbuild
+
+            build:
+              commands:
+                - cargo zigbuild --target aarch64-unknown-linux-gnu --release
+                                
+            post_build: 
+              commands:
+                - |
+                  for file in target/aarch64-unknown-linux-gnu/release/*; do
+                    if test -f "$file" && test -x "$file"; then
+                        filename=$(basename $file);
+                        echo "Deploying $filename";
+                        cp target/aarch64-unknown-linux-gnu/release/$filename bootstrap;
+                        zip bootstrap.zip bootstrap;
+                        aws s3 cp bootstrap.zip s3://$LAMBDA_DEPLOYMENT_BUCKET/$filename;
+                        aws lambda update-function-code \
+                          --function-name $filename \
+                          --s3-bucket $LAMBDA_DEPLOYMENT_BUCKET \
+                          --s3-key $filename \
+                          --architecture arm64 \
+                          --publish;
+                    fi
+                  done
+
+        InsecureSsl: false
+        Type: CODEPIPELINE
+      Artifacts:
+        EncryptionDisabled: false
+        Name: !Sub "lambda-${Env}-${BucketBaseName}"
+        Packaging: NONE
+        Type: CODEPIPELINE
+      Cache:
+        Location: !Sub "${ArtifactBucket}/cache/${BucketBaseName}"
+        Type: S3
+      Environment:
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: true
+        Type: LINUX_CONTAINER
+      ServiceRole: !GetAtt "IAMRole.Arn"
+      TimeoutInMinutes: 60
+      QueuedTimeoutInMinutes: 480
+      BadgeEnabled: false
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: build
+          StreamName: !Sub "${RepoName}"
+        S3Logs:
+          Status: DISABLED
+          EncryptionDisabled: false
+      Visibility: PRIVATE
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "lambda-${Env}-${BucketBaseName}"
+      RoleArn: !GetAtt "IAMRole.Arn"
+      ArtifactStore:
+        Location: !Ref "ArtifactBucket"
+        Type: S3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                BranchName: !Ref "GitBranch"
+                ConnectionArn: !Ref "CodeStarConnectionArn"
+                FullRepositoryId: !Sub "${GitUser}/${RepoName}"
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Region: !Ref "AWS::Region"
+              Namespace: SourceVariables
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                EnvironmentVariables: !Sub |
+                  [
+                    {"name":"LAMBDA_DEPLOYMENT_BUCKET","value":"${LambdaDeploymentBucket}","type":"PLAINTEXT"},
+                    {"name":"CACHE_BUCKET","value":"${ArtifactBucket}","type":"PLAINTEXT"},
+                    {"name":"AWS_DEFAULT_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},
+                    {"name":"PYTHONUNBUFFERED","value":"1","type":"PLAINTEXT"},
+                    {"name":"BUCKET_BASE_NAME","value":"${BucketBaseName}","type":"PLAINTEXT"},
+                    {"name":"AWS_ACCOUNT_ID","value":"${AWS::AccountId}","type":"PLAINTEXT"}
+                  ]
+                ProjectName: !Ref "CodeBuildProject"
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Region: !Ref "AWS::Region"
+              Namespace: BuildVariables
+              RunOrder: 1
+  LambdaFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Env}-${BucketBaseName}"
+      RetentionInDays: 30
+  LambdaFunction:
+    Type: "AWS::Lambda::Function"
+    DependsOn: LambdaFunctionLogGroup
+    Properties:
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTable
+          AWS_REGION: !Ref AWS::Region
+          API_ID: !Ref ApiGatewayV2Api
+      FunctionName: !Sub "${Env}-${BucketBaseName}"
+      Handler: "hello.handler"
+      Architectures:
+        - "arm64"
+      Code:
+        S3Bucket: !Ref LambdaDeploymentBucket
+        S3Key: !Ref BinaryName
+      MemorySize: 128
+      Role: !GetAtt "IAMRole.Arn"
+      Runtime: "provided.al2"
+      Timeout: 6
+      TracingConfig:
+        Mode: "PassThrough"
+      EphemeralStorage:
+        Size: 512
+
+  ApiGatewayV2DomainName:
+    Type: "AWS::ApiGatewayV2::DomainName"
+    Properties:
+      DomainName: !Sub "chat.${Domain}"
+      DomainNameConfigurations:
+        - CertificateArn: !Ref CertificateArn
+          EndpointType: "REGIONAL"
+          SecurityPolicy: "TLS_1_2"
+  ApiGatewayDomainName:
+    Type: "AWS::ApiGateway::DomainName"
+    Properties:
+      DomainName: !Ref ApiGatewayV2DomainName
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
+      RegionalCertificateArn: !Ref CertificateArn
+      SecurityPolicy: "TLS_1_2"
+
+  Route53RecordSet:
+    Type: "AWS::Route53::RecordSet"
+    Properties:
+      Name: !Sub "${ApiGatewayV2DomainName}."
+      Type: "A"
+      AliasTarget:
+        HostedZoneId: !Ref Route53HostedZoneId
+        DNSName: !GetAtt "ApiGatewayDomainName.RegionalDomainName"
+        EvaluateTargetHealth: true
+      HostedZoneId: !Ref Route53HostedZoneId
+
+  ApiGatewayV2Api:
+    Type: "AWS::ApiGatewayV2::Api"
+    Properties:
+      ApiKeySelectionExpression: "$request.header.x-api-key"
+      ProtocolType: "WEBSOCKET"
+      RouteSelectionExpression: "$request.body.action"
+      DisableExecuteApiEndpoint: false
+
+  ApiGatewayV2ApiMapping:
+    Type: "AWS::ApiGatewayV2::ApiMapping"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      DomainName: !Ref ApiGatewayV2DomainName
+      Stage: "default"
+      ApiMappingKey: ""
+
+  ApiGatewayV2IntegrationConnect:
+    Type: "AWS::ApiGatewayV2::Integration"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      ConnectionType: "INTERNET"
+      ContentHandlingStrategy: "CONVERT_TO_TEXT"
+      IntegrationMethod: "POST"
+      IntegrationType: "AWS_PROXY"
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunction}/invocations"
+      PassthroughBehavior: "WHEN_NO_MATCH"
+      TimeoutInMillis: 29000
+      PayloadFormatVersion: "1.0"
+
+  ApiGatewayV2RouteConnect:
+    Type: "AWS::ApiGatewayV2::Route"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      ApiKeyRequired: false
+      AuthorizationType: "NONE"
+      RouteKey: "$connect"
+      Target: !Sub "integrations/${ApiGatewayV2IntegrationConnect}"
+
+  ApiGatewayV2IntegrationDisconnect:
+    Type: "AWS::ApiGatewayV2::Integration"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      ConnectionType: "INTERNET"
+      ContentHandlingStrategy: "CONVERT_TO_TEXT"
+      IntegrationMethod: "POST"
+      IntegrationType: "AWS_PROXY"
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunction}/invocations"
+      PassthroughBehavior: "WHEN_NO_MATCH"
+      TimeoutInMillis: 29000
+      PayloadFormatVersion: "1.0"
+
+  ApiGatewayV2RouteDisconnect:
+    Type: "AWS::ApiGatewayV2::Route"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      ApiKeyRequired: false
+      AuthorizationType: "NONE"
+      RouteKey: "$disconnect"
+      Target: !Sub "integrations/${ApiGatewayV2IntegrationDisconnect}"
+
+  ApiGatewayV2IntegrationSendMessage:
+    Type: "AWS::ApiGatewayV2::Integration"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      ConnectionType: "INTERNET"
+      ContentHandlingStrategy: "CONVERT_TO_TEXT"
+      IntegrationMethod: "POST"
+      IntegrationType: "AWS_PROXY"
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunction}/invocations"
+      PassthroughBehavior: "WHEN_NO_MATCH"
+      TimeoutInMillis: 29000
+      PayloadFormatVersion: "1.0"
+
+  ApiGatewayV2RouteSendMessage:
+    Type: "AWS::ApiGatewayV2::Route"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+      ApiKeyRequired: false
+      AuthorizationType: "NONE"
+      RouteKey: "sendmessage"
+      Target: !Sub "integrations/${ApiGatewayV2IntegrationSendMessage}"
+
+  LambdaPermissionConnect:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayV2Api}/*/$connect"
+
+  LambdaPermissionDisconnect:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayV2Api}/*/$disconnect"
+
+  LambdaPermissionSendMessage:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayV2Api}/*/sendmessage"
