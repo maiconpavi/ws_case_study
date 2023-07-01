@@ -1,3 +1,4 @@
+use aws_sdk_dynamodb::types::AttributeValue;
 use lambda_http::{
     aws_lambda_events::apigw::{ApiGatewayProxyResponse, ApiGatewayWebsocketProxyRequest},
     lambda_runtime::LambdaEvent,
@@ -42,12 +43,34 @@ pub async fn handler(
     futures::future::join_all(
         connections
             .into_iter()
-            .map(|connection| {
-                api_gateway_client
+            .map(|connection| async {
+                let connection = connection;
+                match api_gateway_client
                     .post_to_connection()
-                    .connection_id(connection.connection_id)
+                    .connection_id(connection.connection_id.as_ref())
                     .data(blob.clone())
                     .send()
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to send message to connection_id: {}, the connection will be closed, error: {}",
+                            connection.connection_id,
+                            e
+                        );
+                        dynamodb_client
+                            .delete_item()
+                            .table_name(config::get().table_name.as_ref())
+                            .key(
+                                "connection_id",
+                                AttributeValue::S(connection.connection_id.to_string()),
+                            )
+                            .send()
+                            .await
+                            .map(|_| ())
+                    }
+                }
             })
             .collect::<Vec<_>>(),
     )

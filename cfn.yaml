@@ -5,6 +5,10 @@ Parameters:
     Type: "String"
     Description: "Route53 Hosted Zone Id"
     Default: "Z0206027EF0OUUK7GFJ2"
+  HostedZoneId:
+    Type: "String"
+    Description: "Hosted Zone Id"
+    Default: "Z1UJRXOUMOOFQ8"
   CodeStarConnectionArn:
     Type: "String"
     Description: "Code Star Connection Arn"
@@ -86,7 +90,7 @@ Resources:
     Type: "AWS::IAM::Role"
     Properties:
       Path: "/service-role/"
-      RoleName: "test-ws-rust"
+      RoleName: !Sub "${Env}-${BucketBaseName}-service-role"
       AssumeRolePolicyDocument: |
         {
           "Version": "2012-10-17",
@@ -171,6 +175,22 @@ Resources:
                         "Effect": "Allow",
                         "Action": [
                             "lambda:*"
+                        ],
+                        "Resource": [
+                            "*"
+                        ]
+                    }
+                ]
+            }
+        - PolicyName: codestar-connections
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "codestar-connections:UseConnection"
                         ],
                         "Resource": [
                             "*"
@@ -332,7 +352,6 @@ Resources:
       Environment:
         Variables:
           TABLE_NAME: !Ref DynamoDBTable
-          AWS_REGION: !Ref AWS::Region
           API_ID: !Ref ApiGatewayV2Api
       FunctionName: !Sub "${Env}-${BucketBaseName}"
       Handler: "hello.handler"
@@ -371,10 +390,10 @@ Resources:
   Route53RecordSet:
     Type: "AWS::Route53::RecordSet"
     Properties:
-      Name: !Sub "${ApiGatewayV2DomainName}."
+      Name: !Sub "chat.${Domain}"
       Type: "A"
       AliasTarget:
-        HostedZoneId: !Ref Route53HostedZoneId
+        HostedZoneId: !Ref HostedZoneId
         DNSName: !GetAtt "ApiGatewayDomainName.RegionalDomainName"
         EvaluateTargetHealth: true
       HostedZoneId: !Ref Route53HostedZoneId
@@ -383,16 +402,37 @@ Resources:
     Type: "AWS::ApiGatewayV2::Api"
     Properties:
       ApiKeySelectionExpression: "$request.header.x-api-key"
+      Name: !Sub "${Env}-${BucketBaseName}"
       ProtocolType: "WEBSOCKET"
       RouteSelectionExpression: "$request.body.action"
       DisableExecuteApiEndpoint: false
+
+  ApiGatewayV2Deployment:
+    Type: "AWS::ApiGatewayV2::Deployment"
+    Properties:
+      ApiId: !Ref ApiGatewayV2Api
+
+  ApiGatewayV2Stage:
+    Type: "AWS::ApiGatewayV2::Stage"
+    Properties:
+      StageName: "default"
+      StageVariables: {}
+      ApiId: !Ref ApiGatewayV2Api
+      DeploymentId: !Ref ApiGatewayV2Deployment
+      RouteSettings: {}
+      DefaultRouteSettings:
+        DataTraceEnabled: false
+        DetailedMetricsEnabled: false
+        LoggingLevel: "OFF"
+        ThrottlingBurstLimit: 500
+        ThrottlingRateLimit: 100
 
   ApiGatewayV2ApiMapping:
     Type: "AWS::ApiGatewayV2::ApiMapping"
     Properties:
       ApiId: !Ref ApiGatewayV2Api
-      DomainName: !Ref ApiGatewayV2DomainName
-      Stage: "default"
+      DomainName: !Sub "chat.${Domain}"
+      Stage: !Ref ApiGatewayV2Stage
       ApiMappingKey: ""
 
   ApiGatewayV2IntegrationConnect:
