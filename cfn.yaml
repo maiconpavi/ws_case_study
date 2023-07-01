@@ -82,6 +82,9 @@ Resources:
           AttributeType: "S"
       BillingMode: "PAY_PER_REQUEST"
       TableName: "chat-connections"
+      TimeToLiveSpecification:
+        AttributeName: "ttl"
+        Enabled: true
       KeySchema:
         - AttributeName: "connection_id"
           KeyType: "HASH"
@@ -265,7 +268,6 @@ Resources:
                     --s3-key $BINARY_NAME \
                     --architecture arm64 \
                     --publish;
-                    
 
         InsecureSsl: false
         Type: CODEPIPELINE

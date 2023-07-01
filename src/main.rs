@@ -6,7 +6,7 @@ pub mod schema;
 use error::{Error, Result};
 use lambda_http::{
     aws_lambda_events::apigw::{ApiGatewayProxyResponse, ApiGatewayWebsocketProxyRequest},
-    lambda_runtime::{self, run, service_fn, LambdaEvent},
+    lambda_runtime::{self, LambdaEvent},
 };
 
 async fn parse_event(
@@ -56,7 +56,7 @@ async fn main() -> std::result::Result<(), lambda_runtime::Error> {
         .build();
     let api_gateway_client = aws_sdk_apigatewaymanagement::Client::from_conf(api_management_config);
 
-    run(service_fn(|event| async {
+    lambda_runtime::run(lambda_runtime::service_fn(|event| async {
         match Box::pin(parse_event(
             dynamodb_client.clone(),
             api_gateway_client.clone(),

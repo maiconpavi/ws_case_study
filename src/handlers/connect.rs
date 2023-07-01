@@ -1,4 +1,4 @@
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime};
 use lambda_http::{
     aws_lambda_events::apigw::{ApiGatewayProxyResponse, ApiGatewayWebsocketProxyRequest},
     lambda_runtime::LambdaEvent,
@@ -19,13 +19,18 @@ pub async fn handler(
     event: LambdaEvent<ApiGatewayWebsocketProxyRequest>,
 ) -> Result<ApiGatewayProxyResponse> {
     let request_context = event.payload.request_context;
+    let connected_at = DateTime::from_utc(
+        NaiveDateTime::from_timestamp_millis(request_context.connected_at)
+            .ok_or_else(|| Error::custom("connected_at is invalid timestamp"))?,
+        chrono::Utc,
+    );
     let connection = schema::connection::Connection {
         connection_id: request_context
             .connection_id
             .ok_or_else(|| Error::custom("connection_id not found"))?
             .into(),
-        connected_at: NaiveDateTime::from_timestamp_millis(request_context.connected_at)
-            .ok_or_else(|| Error::custom("connected_at is invalid timestamp"))?,
+        connected_at,
+        ttl: connected_at + chrono::Duration::hours(24),
     };
 
     dynamodb_client
