@@ -198,6 +198,23 @@ Resources:
                     }
                 ]
             }
+        - PolicyName: codebuild
+          PolicyDocument: |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "codebuild:BatchGetBuilds",
+                            "codebuild:StartBuild"
+                        ],
+                        "Resource": [
+                            "*"
+                        ]
+                    }
+                ]
+            }
       ManagedPolicyArns:
         - "arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator"
         - "arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
@@ -222,9 +239,8 @@ Resources:
           phases:
             pre_build:
               commands:
-                - source "$HOME/.cargo/env" || true
                 - |
-                  (command -v cargo >/dev/null && rustup update stable) || {
+                  (command -v cargo >/dev/null && (rustup update stable && source "$HOME/.cargo/env")) || {
                     curl https://sh.rustup.rs -sSf | bash -s -- -y;
                     source "$HOME/.cargo/env";
                     cargo search --limit 0;
@@ -240,21 +256,16 @@ Resources:
             post_build: 
               commands:
                 - |
-                  for file in target/aarch64-unknown-linux-gnu/release/*; do
-                    if test -f "$file" && test -x "$file"; then
-                        filename=$(basename $file);
-                        echo "Deploying $filename";
-                        cp target/aarch64-unknown-linux-gnu/release/$filename bootstrap;
-                        zip bootstrap.zip bootstrap;
-                        aws s3 cp bootstrap.zip s3://$LAMBDA_DEPLOYMENT_BUCKET/$filename;
-                        aws lambda update-function-code \
-                          --function-name $filename \
-                          --s3-bucket $LAMBDA_DEPLOYMENT_BUCKET \
-                          --s3-key $filename \
-                          --architecture arm64 \
-                          --publish;
-                    fi
-                  done
+                  cp target/aarch64-unknown-linux-gnu/release/$BINARY_NAME bootstrap;
+                  zip bootstrap.zip bootstrap;
+                  aws s3 cp bootstrap.zip s3://$LAMBDA_DEPLOYMENT_BUCKET/$BINARY_NAME;
+                  aws lambda update-function-code \
+                    --function-name $FUNCTION_NAME \
+                    --s3-bucket $LAMBDA_DEPLOYMENT_BUCKET \
+                    --s3-key $BINARY_NAME \
+                    --architecture arm64 \
+                    --publish;
+                    
 
         InsecureSsl: false
         Type: CODEPIPELINE
@@ -328,7 +339,10 @@ Resources:
                     {"name":"AWS_DEFAULT_REGION","value":"${AWS::Region}","type":"PLAINTEXT"},
                     {"name":"PYTHONUNBUFFERED","value":"1","type":"PLAINTEXT"},
                     {"name":"BUCKET_BASE_NAME","value":"${BucketBaseName}","type":"PLAINTEXT"},
-                    {"name":"AWS_ACCOUNT_ID","value":"${AWS::AccountId}","type":"PLAINTEXT"}
+                    {"name":"AWS_ACCOUNT_ID","value":"${AWS::AccountId}","type":"PLAINTEXT"},
+                    {"name":"BINARY_NAME","value":"${BinaryName}","type":"PLAINTEXT"},
+                    {"name":"FUNCTION_NAME","value":"${Env}-${BucketBaseName}","type":"PLAINTEXT"}
+
                   ]
                 ProjectName: !Ref "CodeBuildProject"
               InputArtifacts:
